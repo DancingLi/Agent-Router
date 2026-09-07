@@ -147,7 +147,7 @@ class AgentRouter {
   /**
    * Worker Agent waits for an incoming task (Cross-process, cross-application file watcher)
    */
-  async waitForTask(agentName, timeoutSec = 120) {
+  async waitForTask(agentName, timeoutSec = 86400) {
     db.log(`[waitForTask] ${agentName} started waiting for task (Timeout: ${timeoutSec}s)`);
 
     // Check inbox first

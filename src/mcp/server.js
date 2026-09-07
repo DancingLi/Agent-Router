@@ -39,7 +39,7 @@ const TOOLS = [
       properties: {
         timeout_sec: {
           type: "number",
-          description: "单次最长等待秒数（默认 120 秒）"
+          description: "单次最长等待秒数（默认 86400 秒 = 24 小时；0 Token 挂起，超时静默重挂即可）"
         }
       }
     }
@@ -138,7 +138,7 @@ async function handleToolCall(name, args) {
     }
 
     case "wait_for_task": {
-      const timeoutSec = args?.timeout_sec || 120;
+      const timeoutSec = args?.timeout_sec || 86400;
       const res = await router.waitForTask(currentAgentName, timeoutSec);
       if (res.timeout) {
         return {
