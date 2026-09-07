@@ -1,0 +1,149 @@
+#!/usr/bin/env node
+const router = require("../src/core/router");
+const db = require("../src/core/db");
+
+const args = process.argv.slice(2);
+const command = args[0];
+
+function printHelp() {
+  console.log(`
+Herdr <-> 桌面应用 (ZCode/AntiGravity/Cursor/Claude) Agent Message Router CLI
+
+用法:
+  router call <target> <message> [--timeout <sec>]       【同步调度】派发任务并阻塞挂起等待回包 (0 Token 消耗)
+  router send <target> <message> [--reply-to <req_id>]   向目标 Agent 发送普通消息或回复特定任务
+  router list                                            列出当前网络内所有 Agent 的在线/离线状态与物理句柄
+  router inbox [name] [--clear]                          查收指定 Agent 的信箱
+  router register <name> [role] [pane_id]                在路由网络中手动登记或更新 Agent
+
+示例:
+  # 场景 1: 同步派单给 ZCode 或 AntiGravity 中的 Agent 并等待其执行完成:
+  router call zcode-frontend "请优化移动端导航栏组件" --timeout 180
+
+  # 场景 2: Herdr 中的 Kimi 完成代码后回包给调用方:
+  router send architect "登录接口已完成，相关用例全部通过" --reply-to req_123456
+
+  # 场景 3: 查看当前全域网络中所有的 Agent:
+  router list
+`);
+}
+
+async function main() {
+  if (!command || command === "--help" || command === "-h") {
+    printHelp();
+    process.exit(0);
+  }
+
+  const callerName = process.env.AGENT_NAME || (process.env.HERDR_PANE_ID ? `pane_${process.env.HERDR_PANE_ID}` : "commander-herdr");
+
+  switch (command) {
+    case "call": {
+      const target = args[1];
+      const message = args[2];
+      if (!target || !message) {
+        console.error("❌ 缺少参数: 请提供目标 Agent 与任务内容。例如: router call zcode-frontend \"修改按钮样式\"");
+        process.exit(1);
+      }
+
+      let timeoutSec = 300;
+      const timeoutIdx = args.indexOf("--timeout");
+      if (timeoutIdx !== -1 && args[timeoutIdx + 1]) {
+        timeoutSec = parseInt(args[timeoutIdx + 1], 10) || 300;
+      }
+
+      console.log(`📡 [同步调用]: 正在派发任务给 [${target}]，挂起等待回包 (超时: ${timeoutSec}s)...`);
+      try {
+        const result = await router.sendAndWait(callerName, target, message, timeoutSec);
+        console.log(`\n🎉 【任务完成 - 收到来自 [${result.from}] 的回包】:\n`);
+        console.log(result.reply);
+        console.log("");
+        process.exit(0);
+      } catch (err) {
+        console.error(`\n❌ 【调用失败或超时】: ${err.message}`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    case "send": {
+      const target = args[1];
+      const message = args[2];
+      if (!target || !message) {
+        console.error("❌ 缺少参数: 请提供目标名称与消息内容。例如: router send architect \"完成报告\"");
+        process.exit(1);
+      }
+
+      let replyTo = null;
+      const replyIdx = args.indexOf("--reply-to");
+      if (replyIdx !== -1 && args[replyIdx + 1]) {
+        replyTo = args[replyIdx + 1];
+      }
+
+      const res = router.send(callerName, target, message, replyTo);
+      if (replyTo) {
+        console.log(`✅ 已成功回包给 [${target}] (已闭环解除挂起请求: ${replyTo})`);
+      } else {
+        console.log(`📨 消息已成功发送给 [${target}]`);
+      }
+      break;
+    }
+
+    case "list": {
+      const agents = router.list();
+      console.log("\n📋 【全域 Agent 注册寻址与存活状态表】:\n");
+      for (const [name, info] of Object.entries(agents)) {
+        const isOnline = info.status !== "offline";
+        const statusBadge = isOnline ? "🟢 在线" : "🔴 离线";
+        const handle = info.pane_id ? `Pane:${info.pane_id}` : (info.pid ? `PID:${info.pid}` : "N/A");
+        console.log(`• ${name.padEnd(18)} | ${statusBadge} | 宿主: ${(info.runtime || "unknown").padEnd(12)} | 句柄: ${handle.padEnd(12)} | 职责: ${info.role || "无"}`);
+      }
+      console.log("");
+      break;
+    }
+
+    case "inbox": {
+      const agentName = args[1] || callerName;
+      const clear = args.includes("--clear");
+      const messages = router.getInbox(agentName, clear);
+      console.log(`\n📬 [${agentName}] 的信箱 (${messages.length} 条消息):\n`);
+      if (messages.length === 0) {
+        console.log("  (暂无新消息)");
+      } else {
+        messages.forEach((m, idx) => {
+          console.log(`[#${idx + 1}] 来自: ${m.from} (${new Date(m.received_at || Date.now()).toLocaleTimeString()})`);
+          if (m.req_id) console.log(`    ReqID: ${m.req_id}`);
+          console.log(`    内容: ${m.message}\n`);
+        });
+      }
+      break;
+    }
+
+    case "register": {
+      const name = args[1];
+      const role = args[2] || "agent";
+      const paneId = args[3] || process.env.HERDR_PANE_ID || "w1:p1";
+      if (!name) {
+        console.error("❌ 缺少名称: 例如: router register kimi coder w1:p1");
+        process.exit(1);
+      }
+      router.register(name, {
+        role,
+        runtime: "herdr",
+        pane_id: paneId,
+        description: `Registered via CLI in pane ${paneId}`
+      });
+      console.log(`✅ Agent [${name}] 已成功注册为 ${role} (宿主: herdr, 面板: ${paneId})`);
+      break;
+    }
+
+    default:
+      console.error(`❌ 未知命令: ${command}`);
+      printHelp();
+      process.exit(1);
+  }
+}
+
+main().catch((err) => {
+  console.error("❌ 执行出错:", err.message);
+  process.exit(1);
+});

@@ -1,0 +1,53 @@
+{
+  "name": "universal-agent-router",
+  "version": "2.0.0",
+  "description": "Universal multi-agent communication bus bridging desktop AI apps (AntiGravity, ZCode, Cursor, Claude Desktop) and terminal CLI agents with Zero-Token RPC",
+  "main": "src/mcp/server.js",
+  "bin": {
+    "router": "./bin/router",
+    "router-setup": "./bin/setup-clients.sh"
+  },
+  "files": [
+    "bin",
+    "src",
+    "examples",
+    "README.md",
+    "README_CN.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node src/mcp/server.js",
+    "test": "node test/test-router.js && node test/test-multi-app.js",
+    "setup": "./bin/setup-clients.sh"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "agent",
+    "mcp",
+    "model-context-protocol",
+    "multi-agent",
+    "router",
+    "ipc",
+    "rpc",
+    "cli",
+    "claude-desktop",
+    "cursor",
+    "zcode",
+    "antigravity",
+    "herdr",
+    "orchestration"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DancingLi/Agent-Router.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DancingLi/Agent-Router/issues"
+  },
+  "homepage": "https://github.com/DancingLi/Agent-Router#readme",
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs"
+}

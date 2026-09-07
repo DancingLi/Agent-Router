@@ -1,0 +1,39 @@
+name: 🐛 Bug Report
+description: Report an issue or unexpected behavior in Universal Agent Router
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to report this bug!
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: What steps did you take? Which Agent / IDE / CLI were you using?
+      placeholder: |
+        1. Configured Claude Desktop with router
+        2. Dispatched task using `router call ...`
+        3. Observed timeout / error
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      description: Excerpts from `.router/logs/router.log` or terminal output.
+      render: shell
+  - type: input
+    id: environment
+    attributes:
+      label: Environment Info
+      description: OS version, Node.js version (`node -v`), Client apps involved (Cursor, ZCode, Claude, etc.)
+      placeholder: macOS 14.5, Node v20.10.0, Cursor + Kimi CLI
+    validations:
+      required: true
