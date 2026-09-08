@@ -219,9 +219,11 @@ class AgentRouter {
     });
   }
 
-  send(from, target, message, replyTo = null) {
-    db.log(`[send] ${from} -> ${target} (replyTo: ${replyTo || "none"})`);
+  send(from, target, message, replyTo = null, options = {}) {
+    const isTask = !!(options && options.isTask);
+    db.log(`[send] ${from} -> ${target} (replyTo: ${replyTo || "none"}, isTask: ${isTask})`);
 
+    // Case 1: Replying to a task
     if (replyTo) {
       const responseData = {
         req_id: replyTo,
@@ -237,6 +239,9 @@ class AgentRouter {
       }
 
       db.saveResponse(responseData);
+      // Clean up the pending request from requests/
+      db.deleteRequest(replyTo);
+
       db.appendInbox(target, {
         from,
         type: "rpc_reply",
@@ -247,6 +252,39 @@ class AgentRouter {
       return { ok: true, status: "replied", req_id: replyTo };
     }
 
+    // Case 2: Asynchronous task dispatch (creates pending request, wakes waitForTask)
+    if (isTask) {
+      const reqId = (options && options.reqId) || `req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const taskPayload = {
+        id: reqId,
+        from,
+        target,
+        message,
+        created_at: Date.now(),
+        status: "pending"
+      };
+
+      db.saveRequest(taskPayload);
+
+      db.appendInbox(target, {
+        req_id: reqId,
+        from,
+        type: "rpc_request",
+        message
+      });
+
+      const registry = this.list();
+      const targetInfo = registry[target] || { runtime: "herdr", pane_id: target };
+      if (targetInfo.runtime === "herdr" || targetInfo.pane_id) {
+        const herdrTarget = targetInfo.pane_id || target;
+        const promptText = `【来自 ${from} 的异步协同任务】\n${message}\n\n[完成后请在终端运行回复]:\nrouter send ${from} "<你的结果/回复>" --reply-to ${reqId}`;
+        herdr.promptAgent(herdrTarget, promptText);
+      }
+
+      return { ok: true, status: "task_dispatched", req_id: reqId, target };
+    }
+
+    // Case 3: Plain asynchronous message/notice
     db.appendInbox(target, {
       from,
       type: "message",

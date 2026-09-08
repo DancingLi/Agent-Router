@@ -11,7 +11,7 @@ Herdr <-> 桌面应用 (ZCode/AntiGravity/Cursor/Claude) Agent Message Router CL
 
 用法:
   router call <target> <message> [--timeout <sec>]       【同步调度】派发任务并阻塞挂起等待回包 (0 Token 消耗)
-  router send <target> <message> [--reply-to <req_id>]   向目标 Agent 发送普通消息或回复特定任务
+  router send <target> <message> [--task] [--reply-to <req_id>]  向目标发送普通消息、派发异步任务(--task)或回复特定任务
   router list                                            列出当前网络内所有 Agent 的在线/离线状态与物理句柄
   router inbox [name] [--clear]                          查收指定 Agent 的信箱
   router register <name> [role] [pane_id]                在路由网络中手动登记或更新 Agent
@@ -20,10 +20,13 @@ Herdr <-> 桌面应用 (ZCode/AntiGravity/Cursor/Claude) Agent Message Router CL
   # 场景 1: 同步派单给 ZCode 或 AntiGravity 中的 Agent 并等待其执行完成:
   router call zcode-frontend "请优化移动端导航栏组件" --timeout 180
 
-  # 场景 2: Herdr 中的 Kimi 完成代码后回包给调用方:
+  # 场景 2: 异步派发任务给工作节点 (即刻唤醒 wait_for_task 监听，生成 ReqID 待办):
+  router send zcode-frontend "请设计用户注册流程页面" --task
+
+  # 场景 3: Herdr 中的 Kimi 完成代码后回包给调用方:
   router send architect "登录接口已完成，相关用例全部通过" --reply-to req_123456
 
-  # 场景 3: 查看当前全域网络中所有的 Agent:
+  # 场景 4: 查看当前全域网络中所有的 Agent:
   router list
 `);
 }
@@ -79,9 +82,12 @@ async function main() {
         replyTo = args[replyIdx + 1];
       }
 
-      const res = router.send(callerName, target, message, replyTo);
+      const isTask = args.includes("--task");
+      const res = router.send(callerName, target, message, replyTo, { isTask });
       if (replyTo) {
         console.log(`✅ 已成功回包给 [${target}] (已闭环解除挂起请求: ${replyTo})`);
+      } else if (res.status === "task_dispatched") {
+        console.log(`📋 异步任务已成功派发给 [${target}] (任务 ReqID: ${res.req_id}，已入待办队列并触发即时唤醒)`);
       } else {
         console.log(`📨 消息已成功发送给 [${target}]`);
       }

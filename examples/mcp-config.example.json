@@ -1,13 +1,14 @@
 {
-  "mcpServers": {
-    "agent-router": {
-      "command": "node",
-      "args": [
-        "/path/to/universal-agent-router/src/mcp/server.js"
-      ],
-      "env": {
-        "AGENT_NAME": "my-desktop-agent",
-        "ROUTER_PROJECT_DIR": "/path/to/universal-agent-router"
+  "mcp": {
+    "servers": {
+      "agent-router": {
+        "command": "node",
+        "args": [
+          "/path/to/universal-agent-router/src/mcp/server.js"
+        ],
+        "env": {
+          "ROUTER_PROJECT_DIR": "/path/to/universal-agent-router"
+        }
       }
     }
   }

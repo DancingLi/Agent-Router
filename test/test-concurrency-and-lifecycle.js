@@ -108,13 +108,88 @@ async function runReviewIssuesTests() {
 
   // --- Test 5: 零开箱硬编码配置验证 ---
   console.log("▶ [Test 5] 验证类库启动零硬编码，无默认 kimi/pi 绑定...");
-  // 检验 db 模块没有在无人工干预下预制特定 pane
-  const rawFiles = fs.readdirSync(db.AGENTS_DIR);
-  const hasHardcodedSeeding = rawFiles.some(f => f === "kimi.json" || f === "pi.json");
-  // 只要没有手工 register，它就不应凭空冒出
+  const kimiFile = path.join(db.AGENTS_DIR, "kimi.json");
+  const piFile = path.join(db.AGENTS_DIR, "pi.json");
+  if (fs.existsSync(kimiFile)) fs.unlinkSync(kimiFile);
+  if (fs.existsSync(piFile)) fs.unlinkSync(piFile);
+
+  // 触发 db 操作，验证不会有任何默认种子文件被隐式注入
+  db.getRegistry();
+
+  assert(!fs.existsSync(kimiFile), "db.getRegistry 不应自动生成硬编码 kimi 种子");
+  assert(!fs.existsSync(piFile), "db.getRegistry 不应自动生成硬编码 pi 种子");
   console.log("  ✓ 类库零硬编码状态确认完毕！");
 
-  console.log("\n🎉 评审提出的 5 项潜在隐患全部通过自动化测试闭环验证！\n");
+  // --- Test 6: 异步任务派单与 Worker 唤醒闭环测试 (isTask: true) ---
+  console.log("▶ [Test 6] 验证异步派单 (isTask) 生成待办、即刻唤醒 Worker 及回包结案闭环...");
+  const asyncWorker = "zcode-async-worker";
+  const asyncDispatcher = "cici-pm";
+  router.register(asyncWorker, { role: "worker", runtime: "zcode" });
+  router.getInbox(asyncWorker, true);
+  router.getInbox(asyncDispatcher, true);
+
+  // 1. Worker 进入挂起
+  const workerWaitPromise = router.waitForTask(asyncWorker, 5);
+  await sleep(100);
+
+  // 2. 发起方异步派单 (不挂起等待)
+  const dispatchResult = router.send(asyncDispatcher, asyncWorker, "异步任务：设计新图表组件", null, { isTask: true });
+  assert.strictEqual(dispatchResult.status, "task_dispatched", "应成功返回 task_dispatched 状态");
+  assert(dispatchResult.req_id, "应生成全局唯一 req_id");
+
+  // 3. 验证 requests/ 目录中存在 pending 待办
+  const pendingRequest = db.getRequest(dispatchResult.req_id);
+  assert(pendingRequest && pendingRequest.status === "pending", "requests/ 中必须落盘 pending 任务供 Supervisor 监控");
+
+  // 4. 验证 Worker 能够被即刻唤醒
+  const receivedTask = await workerWaitPromise;
+  assert.strictEqual(receivedTask.req_id, dispatchResult.req_id, "Worker 接收的任务 ID 必须匹配");
+  assert.strictEqual(receivedTask.message, "异步任务：设计新图表组件", "任务内容必须匹配");
+
+  // 5. Worker 完成后回包结案
+  router.send(asyncWorker, asyncDispatcher, "图表已设计完毕，交付物在 docs/chart.tsx", receivedTask.req_id);
+
+  // 6. 验证 requests/ 中的待办已被闭环清理
+  const requestAfterReply = db.getRequest(dispatchResult.req_id);
+  assert(!requestAfterReply, "回包后待办请求必须已被清理结案");
+
+  // 7. 验证发单人收到回包通知
+  const dispatcherInbox = router.getInbox(asyncDispatcher, true);
+  assert(dispatcherInbox.some(m => m.type === "rpc_reply" && m.reply_to === dispatchResult.req_id), "发单人信箱应收到 rpc_reply 回包通知");
+  console.log("  ✓ 异步派单成功生成 ReqID，即刻唤醒 Worker，回包后待办请求完美结案闭环！");
+
+  // --- Test 7: register_identity 改名后进程退出清理验证 ---
+  console.log("▶ [Test 7] 验证 register_identity 赋予新身份后，窗口退出依然能精准注销新工号...");
+  const mcpProcess2 = spawn("node", [serverScript], {
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+  await sleep(200);
+
+  // 发送 initialize
+  mcpProcess2.stdin.write(JSON.stringify({
+    jsonrpc: "2.0", id: 1, method: "initialize", params: { clientInfo: { name: "zcode" } }
+  }) + "\n");
+  await sleep(200);
+
+  // 调用 register_identity 改名为 外包_tester
+  mcpProcess2.stdin.write(JSON.stringify({
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "register_identity", arguments: { name: "外包_tester", role: "测试工程师" } }
+  }) + "\n");
+  await sleep(300);
+
+  const regDuringRun = router.list();
+  assert(regDuringRun["外包_tester"] && regDuringRun["外包_tester"].status === "online", "外包_tester 必须在线");
+
+  // 关闭进程
+  mcpProcess2.kill("SIGTERM");
+  await sleep(300);
+
+  const regAfterExit2 = router.list();
+  assert(!regAfterExit2["外包_tester"] || regAfterExit2["外包_tester"].status === "offline", "外包_tester 必须已被注销，不能以 online 残留");
+  console.log("  ✓ register_identity 确立的身份在窗口关闭后 100% 优雅注销！");
+
+  console.log("\n🎉 全量针对性隐患回归测试全部 7 项测试 100% 通过！\n");
 }
 
 runReviewIssuesTests().catch(err => {

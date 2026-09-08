@@ -62,6 +62,10 @@ const TOOLS = [
         reply_to: {
           type: "string",
           description: "如果这是对某次任务的答复，请提供任务的 ReqId"
+        },
+        is_task: {
+          type: "boolean",
+          description: "是否作为异步任务派发（将生成 ReqId、写入待办队列并即刻唤醒目标 Agent 的 wait_for_task 监听）"
         }
       },
       required: ["target", "message"]
@@ -157,15 +161,33 @@ async function handleToolCall(name, args) {
     }
 
     case "send_message": {
-      const { target, message, reply_to } = args;
-      const res = router.send(currentAgentName, target, message, reply_to || null);
+      const { target, message, reply_to, is_task } = args;
+      const res = router.send(currentAgentName, target, message, reply_to || null, { isTask: !!is_task });
+      if (reply_to) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `✅ 已向 [${target}] 回传任务结果 (已闭环解除请求: ${reply_to})`
+            }
+          ]
+        };
+      }
+      if (res.status === "task_dispatched") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `📋 已作为异步任务成功派发给 [${target}] (任务ID: ${res.req_id}，已入待办队列并触发即时唤醒)`
+            }
+          ]
+        };
+      }
       return {
         content: [
           {
             type: "text",
-            text: reply_to 
-              ? `✅ 已向 [${target}] 回传任务结果 (已闭环解除请求: ${reply_to})`
-              : `📨 消息已成功投递给 [${target}]`
+            text: `📨 消息已成功投递给 [${target}]`
           }
         ]
       };
@@ -212,6 +234,7 @@ async function handleToolCall(name, args) {
         pid: process.pid,
         description: `Registered from ${clientAppName} (PID: ${process.pid})`
       });
+      registeredName = name;
       return {
         content: [{ type: "text", text: `✅ 当前 Agent 身份已确立为 [${name}]（职责：${role}）` }]
       };

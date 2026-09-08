@@ -85,11 +85,18 @@ router call agent-c "任务 2: 后端用户模型已就绪，请编写对应的�
 
 ## 四、 常用管理命令汇总
 
-| 命令 | 适用方 | 作用 |
-| :--- | :--- | :--- |
 | router list | Herdr / Bash | 查看当前网络内所有 Agent 及其在线状态 |
 | router call <target> "<msg>" | Herdr 指挥官 | 派发任务并阻塞等待结果（RPC 同步调用） |
-| router send <target> "<msg>" | 任意终端 | 异步发送消息或回包（配合 --reply-to） |
+| router send <target> "<msg>" [--task] | 任意终端 | 异步发送普通消息或派发异步任务（--task 唤醒 wait_for_task） |
 | router inbox [name] | 任意终端 | 查收指定 Agent 的信箱 |
-| send_and_wait(...) | ZCode Agent | ZCode 主导时派发任务给 Herdr 并挂起等待 |
-| wait_for_task(...) | ZCode Agent | ZCode 作为 Worker 时挂起监听 Herdr 任务 |
+| send_and_wait(...) | ZCode Agent | 派发任务给目标 Agent 并挂起等待（0 Token 消耗） |
+| wait_for_task(...) | ZCode Agent | 作为 Worker 挂起监听任务（0 Token 消耗） |
+| register_identity(...) | ZCode Agent | 确立或切换当前 Agent 的业务角色名 |
+
+---
+
+## 五、 Token 成本控制与防暴饮暴食红线
+
+1. **任务包指针法则**：严禁在 `call`、`send` 或 `send_message` 参数中粘贴数百行代码或报错。大型任务包一律先行写入 `docs/tasks/package.md`，消息只传递文件路径指针。
+2. **长会话上下文归档**：Herdr 常驻员工执行完阶段性重大任务后，及时在终端执行 `/clear`，避免会话历史滚雪球至 150K+ Tokens 导致单次推理成本失控。
+3. **Relay 乒乓熔断**：事务往返超 10 轮无实质交付物，强制熔断并汇报 CEO。
