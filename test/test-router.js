@@ -81,6 +81,7 @@ async function runTests() {
 
   // Test 5: Timeout handling
   console.log("▶ [Test 5] 测试 RPC 等待超时异常保护...");
+  router.register("ghost_agent", { role: "silent", runtime: "desktop" });
   let timeoutTriggered = false;
   try {
     await router.sendAndWait("architect", "ghost_agent", "这条消息不会有人回复", 1);

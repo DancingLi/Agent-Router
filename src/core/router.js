@@ -47,15 +47,23 @@ class AgentRouter {
    */
   async sendAndWait(from, target, message, timeoutSec = 300) {
     // 1. Proactive Liveness Check: don't wait for timeout if target is already dead/closed
-    const liveness = db.isAgentAlive(target);
-    if (liveness.exists && !liveness.alive) {
-      const reason = liveness.reason === "process_dead" ? "窗口进程已终结" : "已下线";
-      throw new Error(`无法投递：目标 Agent [${target}] ${reason}，请确认其应用窗口是否已关闭。`);
+    const registry = this.list();
+    const targetInfo = registry[target];
+
+    if (!targetInfo) {
+      if (!target.includes(":") && !target.startsWith("pane_")) {
+        throw new Error(`无法投递：目标 Agent [${target}] 不存在或已下线，请确认其应用窗口是否已打开。`);
+      }
+    } else {
+      const liveness = db.isAgentAlive(target);
+      if (!liveness.alive) {
+        const reason = liveness.reason === "process_dead" ? "窗口进程已终结" : "已下线";
+        throw new Error(`无法投递：目标 Agent [${target}] ${reason}，请确认其应用窗口是否已关闭。`);
+      }
     }
 
     const reqId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const registry = this.list();
-    const targetInfo = registry[target] || { runtime: "herdr", pane_id: target };
+    const finalTargetInfo = targetInfo || { runtime: "herdr", pane_id: target };
 
     db.log(`[sendAndWait] ${from} -> ${target} (ReqId: ${reqId}, Timeout: ${timeoutSec}s)`);
 
@@ -150,15 +158,9 @@ class AgentRouter {
   async waitForTask(agentName, timeoutSec = 86400) {
     db.log(`[waitForTask] ${agentName} started waiting for task (Timeout: ${timeoutSec}s)`);
 
-    // Check inbox first
+    // Safely dequeue ONLY one task without dropping other messages
     const checkCurrentInbox = () => {
-      const inbox = db.readInbox(agentName, false);
-      const pendingReq = inbox.find(m => m.type === "rpc_request");
-      if (pendingReq) {
-        db.readInbox(agentName, true);
-        return pendingReq;
-      }
-      return null;
+      return db.dequeueTaskFromInbox(agentName);
     };
 
     const immediate = checkCurrentInbox();
@@ -170,7 +172,7 @@ class AgentRouter {
       };
     }
 
-    // Cross-process file watching on .router/inbox/<agentName>.json
+    // Cross-process file watching on .router/inbox/<agentName>/
     return new Promise((resolve) => {
       let settled = false;
 
@@ -199,21 +201,19 @@ class AgentRouter {
         resolve({ timeout: true, message: `在 ${timeoutSec} 秒内未收到新任务` });
       }, timeoutSec * 1000);
 
-      // Fast polling fallback (200ms)
+      // Fast polling fallback (50ms)
       const interval = setInterval(() => {
         const found = checkCurrentInbox();
         if (found) handleTaskArrived(found);
-      }, 200);
+      }, 50);
 
-      // File-system watcher for instant reaction
+      // File-system watcher for instant reaction on target directory
       let watcher = null;
       try {
-        const targetInboxFile = `${agentName}.json`;
-        watcher = fs.watch(db.INBOX_DIR, (eventType, filename) => {
-          if (filename === targetInboxFile) {
-            const found = checkCurrentInbox();
-            if (found) handleTaskArrived(found);
-          }
+        const targetInboxDir = db.ensureAgentInboxDir(agentName);
+        watcher = fs.watch(targetInboxDir, () => {
+          const found = checkCurrentInbox();
+          if (found) handleTaskArrived(found);
         });
       } catch (e) {}
     });

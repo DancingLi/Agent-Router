@@ -17,7 +17,7 @@
   ],
   "scripts": {
     "start": "node src/mcp/server.js",
-    "test": "node test/test-router.js && node test/test-multi-app.js",
+    "test": "node test/test-router.js && node test/test-multi-app.js && node test/test-concurrency-and-lifecycle.js",
     "setup": "./bin/setup-clients.sh"
   },
   "engines": {

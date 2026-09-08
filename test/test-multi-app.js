@@ -11,6 +11,10 @@ async function sleep(ms) {
 async function runMultiAppTest() {
   console.log("🚀 开始运行跨桌面应用 (AntiGravity ⇄ ZCode) 多进程联动测试...\n");
 
+  // Clean inboxes before test
+  router.getInbox("antigravity-master", true);
+  router.getInbox("zcode-worker", true);
+
   const serverScript = path.resolve(__dirname, "../src/mcp/server.js");
 
   // 1. 启动模拟 AntiGravity 客户端进程 (PID 1)

@@ -20,26 +20,50 @@ function ensureDirs() {
 
 ensureDirs();
 
-function initDefaultAgents() {
-  const defaults = {
-    kimi: { role: "coder", runtime: "herdr", pane_id: "w1:p1", status: "online", description: "Kimi Code CLI in Herdr" },
-    pi: { role: "reviewer", runtime: "herdr", pane_id: "w1:p2", status: "online", description: "Pi CLI in Herdr" }
-  };
-  for (const [name, info] of Object.entries(defaults)) {
-    const file = path.join(AGENTS_DIR, `${name}.json`);
-    if (!fs.existsSync(file)) {
-      fs.writeFileSync(file, JSON.stringify({ name, ...info }, null, 2), "utf8");
-    }
-  }
-}
+/**
+ * Automatically clean up dead ephemeral agents or processes that exited
+ */
+function pruneStaleAgents() {
+  ensureDirs();
+  try {
+    const files = fs.readdirSync(AGENTS_DIR);
+    for (const file of files) {
+      if (!file.endsWith(".json")) continue;
+      const filePath = path.join(AGENTS_DIR, file);
+      try {
+        const content = JSON.parse(fs.readFileSync(filePath, "utf8"));
+        const name = path.basename(file, ".json");
+        const isEphemeral = /^(agent-\d+|test-client-\d+|smoke-\d+|desktop-app-\d+)/.test(name);
 
-initDefaultAgents();
+        if (content.pid) {
+          let alive = false;
+          try {
+            process.kill(content.pid, 0);
+            alive = true;
+          } catch (e) {
+            if (e.code === "ESRCH") alive = false;
+          }
+          if (!alive) {
+            try { fs.unlinkSync(filePath); } catch (e) {}
+            continue;
+          }
+        } else if (content.status === "offline" && isEphemeral) {
+          try { fs.unlinkSync(filePath); } catch (e) {}
+          continue;
+        }
+      } catch (e) {}
+    }
+  } catch (e) {}
+}
 
 /**
  * Get full registry by scanning .router/agents/*.json (Race-condition free!)
  */
-function getRegistry() {
+function getRegistry(autoPrune = true) {
   ensureDirs();
+  if (autoPrune) {
+    pruneStaleAgents();
+  }
   const registry = {};
   try {
     const files = fs.readdirSync(AGENTS_DIR);
@@ -80,14 +104,32 @@ function registerAgent(name, info) {
 }
 
 /**
- * Mark an agent offline
+ * Unregister an agent (Removes ephemeral agents, marks persistent agents offline)
  */
 function unregisterAgent(name) {
   ensureDirs();
   const agentFile = path.join(AGENTS_DIR, `${name}.json`);
   if (fs.existsSync(agentFile)) {
+    const isEphemeral = /^(agent-\d+|test-client-\d+|smoke-\d+|desktop-app-\d+)/.test(name);
+    if (isEphemeral) {
+      try { fs.unlinkSync(agentFile); } catch (e) {}
+      return;
+    }
     try {
       const existing = JSON.parse(fs.readFileSync(agentFile, "utf8"));
+      if (existing.pid) {
+        let alive = false;
+        try {
+          process.kill(existing.pid, 0);
+          alive = true;
+        } catch (e) {
+          alive = false;
+        }
+        if (!alive) {
+          try { fs.unlinkSync(agentFile); } catch (e) {}
+          return;
+        }
+      }
       existing.status = "offline";
       existing.offline_at = Date.now();
       fs.writeFileSync(agentFile, JSON.stringify(existing, null, 2), "utf8");
@@ -168,36 +210,96 @@ function deleteResponse(reqId) {
   }
 }
 
-function appendInbox(target, message) {
+/**
+ * Ensure directory for agent's message inbox and seamlessly migrate any legacy single-file inbox
+ */
+function ensureAgentInboxDir(target) {
   ensureDirs();
-  const inboxFile = path.join(INBOX_DIR, `${target}.json`);
-  let messages = [];
-  if (fs.existsSync(inboxFile)) {
+  const targetDir = path.join(INBOX_DIR, target);
+  const legacyFile = path.join(INBOX_DIR, `${target}.json`);
+
+  if (!fs.existsSync(targetDir)) {
+    fs.mkdirSync(targetDir, { recursive: true });
+  }
+
+  // Migrate legacy single JSON file into per-message files
+  if (fs.existsSync(legacyFile) && !fs.statSync(legacyFile).isDirectory()) {
     try {
-      messages = JSON.parse(fs.readFileSync(inboxFile, "utf8"));
+      const messages = JSON.parse(fs.readFileSync(legacyFile, "utf8"));
+      if (Array.isArray(messages)) {
+        for (const msg of messages) {
+          const id = `legacy_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          fs.writeFileSync(path.join(targetDir, `${id}.json`), JSON.stringify({ ...msg, msg_id: id }, null, 2), "utf8");
+        }
+      }
+      fs.unlinkSync(legacyFile);
     } catch (e) {}
   }
-  messages.push({
-    ...message,
-    received_at: Date.now()
-  });
-  fs.writeFileSync(inboxFile, JSON.stringify(messages, null, 2), "utf8");
+
+  return targetDir;
 }
 
+/**
+ * Truly atomic inbox append (Zero-lock Maildir pattern)
+ * Concurrent writers write unique files via temp-file rename, preventing any write race conditions.
+ */
+function appendInbox(target, message) {
+  const targetDir = ensureAgentInboxDir(target);
+  const timestamp = Date.now();
+  const rand = Math.random().toString(36).slice(2, 8);
+  const id = `msg_${timestamp}_${rand}`;
+  const data = {
+    ...message,
+    msg_id: id,
+    received_at: timestamp
+  };
+
+  const finalFile = path.join(targetDir, `${id}.json`);
+  fs.writeFileSync(finalFile, JSON.stringify(data, null, 2), "utf8");
+}
+
+/**
+ * Read all messages from target agent inbox. If clear=true, unlinks all messages.
+ */
 function readInbox(target, clear = false) {
-  const inboxFile = path.join(INBOX_DIR, `${target}.json`);
-  if (!fs.existsSync(inboxFile)) {
-    return [];
-  }
+  const targetDir = ensureAgentInboxDir(target);
+  const messages = [];
   try {
-    const messages = JSON.parse(fs.readFileSync(inboxFile, "utf8"));
-    if (clear) {
-      fs.writeFileSync(inboxFile, JSON.stringify([], null, 2), "utf8");
+    const files = fs.readdirSync(targetDir).filter(f => f.endsWith(".json")).sort();
+    for (const file of files) {
+      const filePath = path.join(targetDir, file);
+      try {
+        const content = JSON.parse(fs.readFileSync(filePath, "utf8"));
+        messages.push(content);
+        if (clear) {
+          try { fs.unlinkSync(filePath); } catch (e) {}
+        }
+      } catch (e) {}
     }
-    return messages;
-  } catch (e) {
-    return [];
-  }
+  } catch (e) {}
+  messages.sort((a, b) => (a.received_at || a.timestamp || 0) - (b.received_at || b.timestamp || 0));
+  return messages;
+}
+
+/**
+ * Atomically dequeues only ONE task (rpc_request) from target inbox without clearing other messages
+ */
+function dequeueTaskFromInbox(target) {
+  const targetDir = ensureAgentInboxDir(target);
+  try {
+    const files = fs.readdirSync(targetDir).filter(f => f.endsWith(".json")).sort();
+    for (const file of files) {
+      const filePath = path.join(targetDir, file);
+      try {
+        const content = JSON.parse(fs.readFileSync(filePath, "utf8"));
+        if (content.type === "rpc_request") {
+          try { fs.unlinkSync(filePath); } catch (e) {}
+          return content;
+        }
+      } catch (e) {}
+    }
+  } catch (e) {}
+  return null;
 }
 
 function log(msg, level = "INFO") {
@@ -220,6 +322,7 @@ module.exports = {
   registerAgent,
   unregisterAgent,
   isAgentAlive,
+  pruneStaleAgents,
   saveRequest,
   getRequest,
   deleteRequest,
@@ -228,5 +331,7 @@ module.exports = {
   deleteResponse,
   appendInbox,
   readInbox,
+  dequeueTaskFromInbox,
+  ensureAgentInboxDir,
   log
 };

@@ -6,6 +6,7 @@ const db = require("../core/db");
 // Default or environment-assigned identity
 let clientAppName = "desktop-app";
 let currentAgentName = process.env.AGENT_NAME || `agent-${process.pid}`;
+let registeredName = null;
 
 // All available MCP tools
 const TOOLS = [
@@ -260,7 +261,11 @@ rl.on("line", async (line) => {
       }
       // Auto-disambiguate agent name if no custom name provided
       if (!process.env.AGENT_NAME) {
+        const previousName = registeredName;
         currentAgentName = `${clientAppName}-${process.pid}`;
+        if (previousName && previousName !== currentAgentName) {
+          router.unregister(previousName);
+        }
       }
 
       // Register with PID and app metadata
@@ -270,6 +275,7 @@ rl.on("line", async (line) => {
         pid: process.pid,
         description: `Active session in ${clientAppName}`
       });
+      registeredName = currentAgentName;
 
       db.log(`[MCP Server] Client connected: ${clientAppName}, registered as [${currentAgentName}] (PID: ${process.pid})`);
 
@@ -309,8 +315,11 @@ rl.on("line", async (line) => {
 // Process Exit & Cleanup Handlers (Prevent zombie registrations)
 function cleanupAndExit() {
   try {
-    db.log(`[MCP Server] Cleaning up and unregistering [${currentAgentName}]`);
-    router.unregister(currentAgentName);
+    if (registeredName) {
+      db.log(`[MCP Server] Cleaning up and unregistering [${registeredName}]`);
+      router.unregister(registeredName);
+      registeredName = null;
+    }
   } catch (e) {}
 }
 
@@ -326,5 +335,6 @@ router.register(currentAgentName, {
   pid: process.pid,
   description: `Active session (PID: ${process.pid})`
 });
+registeredName = currentAgentName;
 
 db.log(`[MCP Server] Process started as [${currentAgentName}] (PID: ${process.pid})`);
