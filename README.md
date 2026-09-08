@@ -175,6 +175,19 @@ If you prefer configuring your MCP clients manually:
 
 ---
 
+## 🧠 Official Agent Skill (`skills/agent-router`)
+
+To enable your LLM to act as a disciplined, token-efficient citizen in the multi-agent router network, we provide an official, adaptive Skill:
+👉 **[skills/agent-router/SKILL.md](skills/agent-router/SKILL.md)**
+
+### Key Highlights
+- **Tri-State Adaptive Switching**: The agent autonomously switches between **Commander** (orchestration/dispatch), **Worker** (24h zero-token sleep & task consumption), and **Peer** (instant sync consultations).
+- **Communication Dual-Track Decision Tree**: Crystal clear guidance on when to use synchronous RPC (`send_and_wait`) vs asynchronous dispatch (`send_message(..., is_task: true)`).
+- **Token Defense Guardrails**: Enforces the **Task Package Pointer Principle** (never inlining huge code blocks), **24h zero-token standby** (`wait_for_task`), and **anti-loop safeguards**.
+- **Works Everywhere**: Ready to load into **Kimi Code, AntiGravity, Cursor, Claude Desktop, and ZCode**.
+
+---
+
 ## 🧪 Testing
 
 Universal Agent Router comes with a zero-dependency test suite:

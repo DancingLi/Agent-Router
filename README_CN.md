@@ -175,6 +175,19 @@ router register kimi coder w1:p1
 
 ---
 
+## 🧠 官方专属 Skill (`skills/agent-router`)
+
+为了让大模型在多 Agent 协同网络中能够规范、自律、极度节约 Token 地协作，本项目内置了官方专属的自适应技能定义：
+👉 **[skills/agent-router/SKILL.md](skills/agent-router/SKILL.md)**
+
+### 核心亮点
+- **全能自适应三态模型**：大模型根据指令上下文自适应切换为 **指挥官态**（拆解派单）、**工作节点态**（24h 零消耗待命与结案回包）或 **同级协同态**（即时同步问询）。
+- **通信双轨决策树**：清晰指导模型何时使用同步阻塞 RPC（`send_and_wait`），何时使用异步任务派发（`send_message(..., is_task: true)`）。
+- **Token 防暴饮暴食三大红线**：深度植入 **任务包文件指针协议**（严禁消息体塞大段代码）、**86400s 零消耗长挂起**、**零废话与防死循环熔断**。
+- **全生态即插即用**：支持一键导入至 **Kimi Code、AntiGravity、Cursor、Claude Desktop、ZCode** 等各类智能体工作环境。
+
+---
+
 ## 🧪 自动化测试体系
 
 本项目自带一套纯原生的健壮测试套件：
