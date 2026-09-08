@@ -32,7 +32,8 @@ Agent-Router 是一个基于 Unix 哲学构建的轻量级全双工多 Agent 消
 | `list_agents` | (无参数) | 查看全网拓扑与在线状态 | 识别目标节点是否在线、是否为 Herdr 终端 |
 | `send_and_wait` | `target`, `message`, `timeout_sec` (默认 300) | **同步阻塞 RPC** | 发送后立即挂起当前对话，0 Token 等待对方回包唤醒 |
 | `send_message` | `target`, `message`, `is_task`, `reply_to` | **异步派单 / 结案回包 / 普通通知** | `is_task: true` 生成待办并唤醒目标；`reply_to` 结案闭环 |
-| `wait_for_task` | `timeout_sec` (默认 86400) | **Worker 节点静默待命** | 24小时超长零消耗挂起，有任务即刻唤醒 |
+| `wait_for_task` | `timeout_sec` (默认 86400) | **Worker 节点静默待命** | 24小时超长零消耗挂起，有任务即刻唤醒（宿主有 30s 超时限制时改用下方命令） |
+| `router wait-one` *(CLI)* | `<name>`, `--timeout` (默认 86400) | **后台静默哨兵命令** | 专用于宿主强制 30s MCP 超时时，纯静默挂起，有单即打印单行 JSON 并退出唤醒 |
 | `check_inbox` | `clear` (默认 false) | 主动检查信箱残留消息 | 仅在异常恢复或排查时调用，禁止死循环轮询 |
 
 ---
