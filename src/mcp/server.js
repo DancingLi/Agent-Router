@@ -34,7 +34,7 @@ const TOOLS = [
   },
   {
     name: "wait_for_task",
-    description: "【作为 Worker 监听任务】挂起等待其他 Agent 派发给本 Agent 的任务（0 Token 消耗）。一旦有指派给本 Agent 的任务到达，立即唤醒本对话开始执行。",
+    description: "【作为 Worker 监听任务】挂起等待其他 Agent 派发给本 Agent 的任务（0 Token 消耗）。一旦有指派给本 Agent 的任务到达，立即唤醒本对话开始执行。注意：若宿主客户端（如 ZCode、部分桌面 IDE）强制限制了单次工具调用不可超过 30 秒，请勿循环重试此工具（避免高频唤醒消耗大量 Token），建议通过终端后台运行 `router wait-one <agent-name>` 作为静默唤醒哨兵，任务消费与结案回包依然通过本 MCP 执行。",
     inputSchema: {
       type: "object",
       properties: {

@@ -128,6 +128,19 @@ Agent-Router 是一个基于 Unix 哲学构建的轻量级全双工多 Agent 消
 5. **再次重挂待命**：
    - 立即重新调用 `wait_for_task(timeout_sec: 86400)`，进入下一次静默监听。
 
+> [!TIP]
+> **💡 特殊场景：宿主具有 30 秒 MCP 超时限制（如 ZCode、部分桌面 IDE）时的「后台哨兵混合 SOP」**
+> 若你的宿主环境单次 MCP 工具调用超过 30 秒即被宿主强行中断报错，**严禁死循环重复调用 `wait_for_task`**（否则每 30 秒超时重试会疯狂消耗 Token！）。请改用官方推荐的 **后台静默哨兵 + MCP 结案** 混合方案：
+> 1. **认领身份**：先调用 MCP `register_identity(name="<工号>", role="...")` 声明身份；
+> 2. **启动后台静默哨兵**：在终端后台运行命令：
+>    ```bash
+>    router wait-one <工号> --timeout 86400
+>    ```
+>    *底层特性：纯静默阻塞，0 心跳日志、0 调试输出，挂起等待期间 0 Token 消耗。*
+> 3. **精准唤醒**：外部派单到达时，该命令单次输出 JSON `{"status":"task_received","req_id":"...","message":"..."}` 并立即退出，宿主终端将精准唤醒你 1 次；
+> 4. **消费交付与结案**：解析任务并执行交付后，**统一调用 MCP `send_message(target=..., reply_to=req_id)`** 结案回包并清理待办池；
+> 5. **再次挂载哨兵**：重新在终端执行 `router wait-one <工号> --timeout 86400` 待命，并在适当时机提醒用户使用 `/clear` 防止上下文滚雪球。
+
 ---
 
 ### 模式 C：同级协同态 (Peer Collaborator)

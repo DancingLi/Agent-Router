@@ -189,7 +189,44 @@ async function runReviewIssuesTests() {
   assert(!regAfterExit2["外包_tester"] || regAfterExit2["外包_tester"].status === "offline", "外包_tester 必须已被注销，不能以 online 残留");
   console.log("  ✓ register_identity 确立的身份在窗口关闭后 100% 优雅注销！");
 
-  console.log("\n🎉 全量针对性隐患回归测试全部 7 项测试 100% 通过！\n");
+  // --- Test 8: CLI router wait-one 作为后台静默哨兵监听与精准唤醒 ---
+  console.log("▶ [Test 8] 验证 CLI router wait-one 作为后台静默哨兵监听并精准唤醒...");
+  const sentryWorker = "sentry-test-worker";
+  router.register(sentryWorker, { role: "worker", runtime: "desktop" });
+  router.getInbox(sentryWorker, true); // 清空
+
+  const routerCli = path.join(__dirname, "../bin/router");
+  let sentryOutput = "";
+  const sentryProc = spawn("node", [routerCli, "wait-one", sentryWorker, "--timeout", "5"], {
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  sentryProc.stdout.on("data", (data) => {
+    sentryOutput += data.toString();
+  });
+
+  // 确保哨兵已启动就绪并在静默等待
+  await sleep(300);
+  assert.strictEqual(sentryOutput, "", "在收到任务之前，哨兵进程必须保持 100% 绝对静默（0 标准输出）");
+
+  // 发送异步任务以唤醒哨兵
+  const sentryTask = router.send("test-boss", sentryWorker, "哨兵唤醒测试任务内容", null, { isTask: true });
+  assert.strictEqual(sentryTask.status, "task_dispatched");
+
+  // 等待哨兵收到任务退出
+  const exitCode = await new Promise((resolve) => {
+    sentryProc.on("exit", (code) => resolve(code));
+  });
+
+  assert.strictEqual(exitCode, 0, "哨兵收到任务后必须以 code 0 正常退出");
+  assert(sentryOutput.trim().startsWith("{"), "哨兵必须输出单行标准 JSON");
+  const parsedTask = JSON.parse(sentryOutput.trim());
+  assert.strictEqual(parsedTask.status, "task_received");
+  assert.strictEqual(parsedTask.req_id, sentryTask.req_id);
+  assert.strictEqual(parsedTask.message, "哨兵唤醒测试任务内容");
+  console.log("  ✓ router wait-one 静默挂起 0 输出，有单即精准单行 JSON 输出退出！");
+
+  console.log("\n🎉 全量针对性隐患回归测试全部 8 项测试 100% 通过！\n");
 }
 
 runReviewIssuesTests().catch(err => {

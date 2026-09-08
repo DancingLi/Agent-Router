@@ -12,6 +12,7 @@ Herdr <-> 桌面应用 (ZCode/AntiGravity/Cursor/Claude) Agent Message Router CL
 用法:
   router call <target> <message> [--timeout <sec>]       【同步调度】派发任务并阻塞挂起等待回包 (0 Token 消耗)
   router send <target> <message> [--task] [--reply-to <req_id>]  向目标发送普通消息、派发异步任务(--task)或回复特定任务
+  router wait-one <name> [--timeout <sec>]               【静默哨兵】纯静默阻塞监听任务，有单即打印单行 JSON 并退出 (0 Token 待机)
   router list                                            列出当前网络内所有 Agent 的在线/离线状态与物理句柄
   router inbox [name] [--clear]                          查收指定 Agent 的信箱
   router register <name> [role] [pane_id]                在路由网络中手动登记或更新 Agent
@@ -26,7 +27,10 @@ Herdr <-> 桌面应用 (ZCode/AntiGravity/Cursor/Claude) Agent Message Router CL
   # 场景 3: Herdr 中的 Kimi 完成代码后回包给调用方:
   router send architect "登录接口已完成，相关用例全部通过" --reply-to req_123456
 
-  # 场景 4: 查看当前全域网络中所有的 Agent:
+  # 场景 4: 作为后台静默哨兵监听 (宿主有 30s MCP 超时限制时的最佳方案):
+  router wait-one zcode-worker --timeout 86400
+
+  # 场景 5: 查看当前全域网络中所有的 Agent:
   router list
 `);
 }
@@ -90,6 +94,36 @@ async function main() {
         console.log(`📋 异步任务已成功派发给 [${target}] (任务 ReqID: ${res.req_id}，已入待办队列并触发即时唤醒)`);
       } else {
         console.log(`📨 消息已成功发送给 [${target}]`);
+      }
+      break;
+    }
+
+    case "wait":
+    case "wait-one": {
+      const agentName = args[1] || callerName;
+      if (!agentName) {
+        console.error("❌ 缺少参数: 请提供要监听的 Agent 名称。例如: router wait-one zcode-worker");
+        process.exit(1);
+      }
+      let timeoutSec = 86400;
+      const timeoutIdx = args.indexOf("--timeout");
+      if (timeoutIdx !== -1 && args[timeoutIdx + 1]) {
+        timeoutSec = parseInt(args[timeoutIdx + 1], 10) || 86400;
+      }
+
+      try {
+        const task = await router.waitForTask(agentName, timeoutSec);
+        if (task) {
+          // Output single-line JSON for easy parsing by agents/scripts, and exit cleanly
+          console.log(JSON.stringify({ status: "task_received", ...task }));
+          process.exit(0);
+        } else {
+          console.log(JSON.stringify({ status: "timeout" }));
+          process.exit(0);
+        }
+      } catch (err) {
+        console.error("❌ 监听出错:", err.message);
+        process.exit(1);
       }
       break;
     }
