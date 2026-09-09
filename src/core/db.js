@@ -282,17 +282,37 @@ function readInbox(target, clear = false) {
 }
 
 /**
- * Atomically dequeues only ONE task (rpc_request) from target inbox without clearing other messages
+ * Atomically dequeues only ONE matching message/task from target inbox without clearing other messages.
+ * Options:
+ *   mode: 'all' (default: matches rpc_request, rpc_reply, notice, message)
+ *         'task' (matches only rpc_request)
+ *         'reply' (matches only rpc_reply)
+ *         'notice' (matches notice, message)
  */
-function dequeueTaskFromInbox(target) {
+function dequeueFromInbox(target, options = {}) {
   const targetDir = ensureAgentInboxDir(target);
+  const mode = (options && options.mode) || "all";
+
   try {
     const files = fs.readdirSync(targetDir).filter(f => f.endsWith(".json")).sort();
     for (const file of files) {
       const filePath = path.join(targetDir, file);
       try {
         const content = JSON.parse(fs.readFileSync(filePath, "utf8"));
-        if (content.type === "rpc_request") {
+        let match = false;
+        if (mode === "all") {
+          match = (content.type === "rpc_request" || content.type === "rpc_reply" || content.type === "notice" || !!content.wake);
+        } else if (mode === "task") {
+          match = (content.type === "rpc_request");
+        } else if (mode === "reply") {
+          match = (content.type === "rpc_reply");
+        } else if (mode === "notice") {
+          match = (content.type === "notice" || !!content.wake);
+        } else if (mode === "any") {
+          match = true;
+        }
+
+        if (match) {
           try { fs.unlinkSync(filePath); } catch (e) {}
           return content;
         }
@@ -300,6 +320,46 @@ function dequeueTaskFromInbox(target) {
     }
   } catch (e) {}
   return null;
+}
+
+/**
+ * Backward-compatible task dequeue (only rpc_request)
+ */
+function dequeueTaskFromInbox(target) {
+  return dequeueFromInbox(target, { mode: "task" });
+}
+
+const IDENTITY_FILE = path.join(ROUTER_DIR, "agent_name");
+
+/**
+ * Load persistent workspace default identity from .router/agent_name
+ */
+function loadPersistentIdentity() {
+  ensureDirs();
+  try {
+    if (fs.existsSync(IDENTITY_FILE)) {
+      const name = fs.readFileSync(IDENTITY_FILE, "utf8").trim();
+      if (name) return name;
+    }
+  } catch (e) {}
+  return null;
+}
+
+/**
+ * Save persistent workspace default identity to .router/agent_name
+ */
+function savePersistentIdentity(name) {
+  ensureDirs();
+  try {
+    if (!name) {
+      if (fs.existsSync(IDENTITY_FILE)) fs.unlinkSync(IDENTITY_FILE);
+    } else {
+      fs.writeFileSync(IDENTITY_FILE, name.trim(), "utf8");
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 function log(msg, level = "INFO") {
@@ -331,7 +391,10 @@ module.exports = {
   deleteResponse,
   appendInbox,
   readInbox,
+  dequeueFromInbox,
   dequeueTaskFromInbox,
+  loadPersistentIdentity,
+  savePersistentIdentity,
   ensureAgentInboxDir,
   log
 };

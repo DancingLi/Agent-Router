@@ -5,7 +5,7 @@ const db = require("../core/db");
 
 // Default or environment-assigned identity
 let clientAppName = "desktop-app";
-let currentAgentName = process.env.AGENT_NAME || `agent-${process.pid}`;
+let currentAgentName = process.env.AGENT_NAME || db.loadPersistentIdentity() || `agent-${process.pid}`;
 let registeredName = null;
 
 // All available MCP tools
@@ -34,20 +34,25 @@ const TOOLS = [
   },
   {
     name: "wait_for_task",
-    description: "【作为 Worker 监听任务】挂起等待其他 Agent 派发给本 Agent 的任务（0 Token 消耗）。一旦有指派给本 Agent 的任务到达，立即唤醒本对话开始执行。注意：若宿主客户端（如 ZCode、部分桌面 IDE）强制限制了单次工具调用不可超过 30 秒，请勿循环重试此工具（避免高频唤醒消耗大量 Token），建议通过终端后台运行 `router wait-one <agent-name>` 作为静默唤醒哨兵，任务消费与结案回包依然通过本 MCP 执行。",
+    description: "【监听任务或回包】挂起等待其他 Agent 派发任务、交付回包或协同通知（0 Token 消耗）。一旦有指派给本 Agent 的信件到达，立即唤醒本对话开始执行。注意：若宿主客户端（如 ZCode、部分桌面 IDE）强制限制了单次工具调用不可超过 30 秒，请勿循环重试此工具（避免高频唤醒消耗大量 Token），建议通过终端后台运行 `router wait-one <agent-name>` 作为静默唤醒哨兵，任务消费与结案回包依然通过本 MCP 执行。",
     inputSchema: {
       type: "object",
       properties: {
         timeout_sec: {
           type: "number",
           description: "单次最长等待秒数（默认 86400 秒 = 24 小时；0 Token 挂起，超时静默重挂即可）"
+        },
+        mode: {
+          type: "string",
+          description: "监听捕获模式：'all'（默认：同时捕获新任务、回包与提醒通知）、'task'（仅监听新派发任务）、'reply'（仅监听完工交付回包）",
+          enum: ["all", "task", "reply"]
         }
       }
     }
   },
   {
     name: "send_message",
-    description: "向指定的 Agent 发送异步单向消息或对之前任务的回包。",
+    description: "向指定的 Agent 发送异步单向消息、即刻唤醒通知或对之前任务的回包。",
     inputSchema: {
       type: "object",
       properties: {
@@ -66,6 +71,10 @@ const TOOLS = [
         is_task: {
           type: "boolean",
           description: "是否作为异步任务派发（将生成 ReqId、写入待办队列并即刻唤醒目标 Agent 的 wait_for_task 监听）"
+        },
+        wake: {
+          type: "boolean",
+          description: "是否作为即刻唤醒通知（即刻唤醒目标哨兵，但不会在 requests/ 中生成强追踪待办，适合紧急更正、放行或知会，避免看门狗报假警）"
         }
       },
       required: ["target", "message"]
@@ -94,17 +103,21 @@ const TOOLS = [
   },
   {
     name: "register_identity",
-    description: "在全局消息中枢中声明或切换当前 Agent 的业务角色名（如 'architect', 'frontend-dev'）。",
+    description: "在全局消息中枢中声明或切换当前 Agent 的业务角色名（如 'architect', 'frontend-dev', 'cici'）。",
     inputSchema: {
       type: "object",
       properties: {
         name: {
           type: "string",
-          description: "业务名称（如 'architect', 'zcode-frontend', 'antigravity-pm'）"
+          description: "业务名称（如 'architect', 'zcode-frontend', 'cici'）"
         },
         role: {
           type: "string",
           description: "该 Agent 负责的角色描述"
+        },
+        persist: {
+          type: "boolean",
+          description: "是否将此工号持久化保存为本工作区的默认身份（后续切窗或会话重启自动生效，杜绝身份漂移）"
         }
       },
       required: ["name"]
@@ -144,25 +157,38 @@ async function handleToolCall(name, args) {
 
     case "wait_for_task": {
       const timeoutSec = args?.timeout_sec || 86400;
-      const res = await router.waitForTask(currentAgentName, timeoutSec);
+      const mode = args?.mode || "all";
+      const res = await router.waitForTask(currentAgentName, timeoutSec, { mode });
       if (res.timeout) {
         return {
-          content: [{ type: "text", text: `⏳ [暂无新任务]: ${res.message}` }]
+          content: [{ type: "text", text: `⏳ [暂无新信件]: ${res.message}` }]
         };
       }
+
+      let badge = "🎯 [新任务到达]";
+      let tip = `👉 提示：完成任务后，请调用 send_message(target="${res.from}", message="...", reply_to="${res.req_id}") 向调用方回传结果！`;
+
+      if (res.type === "rpc_reply") {
+        badge = "📦 [完工交付回包]";
+        tip = `👉 提示：调用方结案/质检。原任务ID: ${res.reply_to || "N/A"}`;
+      } else if (res.type === "notice") {
+        badge = "🔔 [协同即刻通知]";
+        tip = `👉 提示：此消息为协同唤醒通知，无需结案回包。`;
+      }
+
       return {
         content: [
           {
             type: "text",
-            text: `🎯 [新任务到达 - 来自 ${res.from} (任务ID: ${res.req_id})]:\n\n${res.message}\n\n👉 提示：完成任务后，请调用 send_message(target="${res.from}", message="...", reply_to="${res.req_id}") 向调用方回传结果！`
+            text: `${badge} - 来自 ${res.from}${res.req_id ? ` (ReqId: ${res.req_id})` : ""}:\n\n${res.message}\n\n${tip}`
           }
         ]
       };
     }
 
     case "send_message": {
-      const { target, message, reply_to, is_task } = args;
-      const res = router.send(currentAgentName, target, message, reply_to || null, { isTask: !!is_task });
+      const { target, message, reply_to, is_task, wake } = args;
+      const res = router.send(currentAgentName, target, message, reply_to || null, { isTask: !!is_task, wake: !!wake });
       if (reply_to) {
         return {
           content: [
@@ -179,6 +205,16 @@ async function handleToolCall(name, args) {
             {
               type: "text",
               text: `📋 已作为异步任务成功派发给 [${target}] (任务ID: ${res.req_id}，已入待办队列并触发即时唤醒)`
+            }
+          ]
+        };
+      }
+      if (res.status === "wake_sent") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `⚡ 已向 [${target}] 发送即刻唤醒通知（已触发目标哨兵唤醒，不生成 requests/ 强追踪待办）`
             }
           ]
         };
@@ -201,11 +237,17 @@ async function handleToolCall(name, args) {
           content: [{ type: "text", text: `📭 当前信箱为空（无发给 ${currentAgentName} 的新消息）` }]
         };
       }
-      const formatted = messages.map((m, idx) => 
-        `[#${idx + 1}] 来自: ${m.from} (${new Date(m.received_at || Date.now()).toLocaleTimeString()})\n类型: ${m.type}\n内容: ${m.message}`
-      ).join("\n\n---\n\n");
+      const formatted = messages.map((m, idx) => {
+        let typeBadge = "📨 普通消息";
+        if (m.type === "rpc_request") typeBadge = "🎯 任务派单";
+        else if (m.type === "rpc_reply") typeBadge = "📦 完工回包";
+        else if (m.type === "notice") typeBadge = "🔔 协同通知";
+
+        const reqInfo = m.req_id ? ` | 关联ReqId: ${m.req_id}` : (m.reply_to ? ` | 回复ReqId: ${m.reply_to}` : "");
+        return `[#${idx + 1}] [${typeBadge}${reqInfo}] 来自: ${m.from} (${new Date(m.received_at || Date.now()).toLocaleTimeString()})\n内容: ${m.message}`;
+      }).join("\n\n---\n\n");
       return {
-        content: [{ type: "text", text: `📬 收到 ${messages.length} 条新消息:\n\n${formatted}` }]
+        content: [{ type: "text", text: `📬 收到 ${messages.length} 条消息:\n\n${formatted}` }]
       };
     }
 
@@ -222,7 +264,7 @@ async function handleToolCall(name, args) {
     }
 
     case "register_identity": {
-      const { name, role = "Desktop Agent" } = args;
+      const { name, role = "Desktop Agent", persist } = args;
       // If renaming, mark old one offline
       if (currentAgentName && currentAgentName !== name) {
         router.unregister(currentAgentName);
@@ -235,8 +277,17 @@ async function handleToolCall(name, args) {
         description: `Registered from ${clientAppName} (PID: ${process.pid})`
       });
       registeredName = name;
+
+      let extraMsg = "";
+      if (persist) {
+        const saved = db.savePersistentIdentity(name);
+        if (saved) {
+          extraMsg = "（已持久化写入 .router/agent_name，后续会话重启与切窗自动生效）";
+        }
+      }
+
       return {
-        content: [{ type: "text", text: `✅ 当前 Agent 身份已确立为 [${name}]（职责：${role}）` }]
+        content: [{ type: "text", text: `✅ 当前 Agent 身份已确立为 [${name}]（职责：${role}）${extraMsg}` }]
       };
     }
 
@@ -284,10 +335,18 @@ rl.on("line", async (line) => {
       }
       // Auto-disambiguate agent name if no custom name provided
       if (!process.env.AGENT_NAME) {
-        const previousName = registeredName;
-        currentAgentName = `${clientAppName}-${process.pid}`;
-        if (previousName && previousName !== currentAgentName) {
-          router.unregister(previousName);
+        const persistent = db.loadPersistentIdentity();
+        if (persistent) {
+          if (registeredName && registeredName !== persistent) {
+            router.unregister(registeredName);
+          }
+          currentAgentName = persistent;
+        } else {
+          const previousName = registeredName;
+          currentAgentName = `${clientAppName}-${process.pid}`;
+          if (previousName && previousName !== currentAgentName) {
+            router.unregister(previousName);
+          }
         }
       }
 

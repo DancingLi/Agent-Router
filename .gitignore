@@ -22,5 +22,6 @@ Thumbs.db
 .zcode/
 .idea/
 .vscode/
+.pi/
 *.sublime-project
 *.sublime-workspace

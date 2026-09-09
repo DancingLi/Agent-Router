@@ -153,21 +153,28 @@ class AgentRouter {
   }
 
   /**
-   * Worker Agent waits for an incoming task (Cross-process, cross-application file watcher)
+   * Worker or Commander Agent waits for an incoming task, reply, or notice (Cross-process file watcher)
+   * options:
+   *   mode: 'all' (default: matches rpc_request, rpc_reply, notice)
+   *         'task' (matches only rpc_request)
+   *         'reply' (matches only rpc_reply)
    */
-  async waitForTask(agentName, timeoutSec = 86400) {
-    db.log(`[waitForTask] ${agentName} started waiting for task (Timeout: ${timeoutSec}s)`);
+  async waitForTask(agentName, timeoutSec = 86400, options = {}) {
+    const mode = (typeof options === "string" ? options : options.mode) || "all";
+    db.log(`[waitForTask] ${agentName} started waiting (Mode: ${mode}, Timeout: ${timeoutSec}s)`);
 
-    // Safely dequeue ONLY one task without dropping other messages
+    // Safely dequeue ONLY matching message without dropping others
     const checkCurrentInbox = () => {
-      return db.dequeueTaskFromInbox(agentName);
+      return db.dequeueFromInbox(agentName, { mode });
     };
 
     const immediate = checkCurrentInbox();
     if (immediate) {
       return {
-        req_id: immediate.req_id,
+        req_id: immediate.req_id || null,
         from: immediate.from,
+        type: immediate.type || "message",
+        reply_to: immediate.reply_to || null,
         message: immediate.message
       };
     }
@@ -189,8 +196,10 @@ class AgentRouter {
         if (settled) return;
         cleanup();
         resolve({
-          req_id: task.id || task.req_id,
+          req_id: task.id || task.req_id || null,
           from: task.from,
+          type: task.type || "message",
+          reply_to: task.reply_to || null,
           message: task.message
         });
       };
@@ -198,7 +207,7 @@ class AgentRouter {
       const timer = setTimeout(() => {
         if (settled) return;
         cleanup();
-        resolve({ timeout: true, message: `在 ${timeoutSec} 秒内未收到新任务` });
+        resolve({ timeout: true, message: `在 ${timeoutSec} 秒内未收到新消息` });
       }, timeoutSec * 1000);
 
       // Fast polling fallback (50ms)
@@ -221,7 +230,8 @@ class AgentRouter {
 
   send(from, target, message, replyTo = null, options = {}) {
     const isTask = !!(options && options.isTask);
-    db.log(`[send] ${from} -> ${target} (replyTo: ${replyTo || "none"}, isTask: ${isTask})`);
+    const isWake = !!(options && options.wake);
+    db.log(`[send] ${from} -> ${target} (replyTo: ${replyTo || "none"}, isTask: ${isTask}, wake: ${isWake})`);
 
     // Case 1: Replying to a task
     if (replyTo) {
@@ -252,7 +262,7 @@ class AgentRouter {
       return { ok: true, status: "replied", req_id: replyTo };
     }
 
-    // Case 2: Asynchronous task dispatch (creates pending request, wakes waitForTask)
+    // Case 2: Asynchronous task dispatch (creates pending request in requests/, wakes waitForTask)
     if (isTask) {
       const reqId = (options && options.reqId) || `req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
       const taskPayload = {
@@ -284,7 +294,27 @@ class AgentRouter {
       return { ok: true, status: "task_dispatched", req_id: reqId, target };
     }
 
-    // Case 3: Plain asynchronous message/notice
+    // Case 3: Pure Wake Notice (wakes sentry immediately, NO request tracking in requests/ to avoid watchdog alarms)
+    if (isWake) {
+      db.appendInbox(target, {
+        from,
+        type: "notice",
+        wake: true,
+        message
+      });
+
+      const registry = this.list();
+      const targetInfo = registry[target] || { runtime: "herdr", pane_id: target };
+      if (targetInfo.runtime === "herdr" || targetInfo.pane_id) {
+        const herdrTarget = targetInfo.pane_id || target;
+        const promptText = `【来自 ${from} 的协同通知】\n${message}`;
+        herdr.promptAgent(herdrTarget, promptText);
+      }
+
+      return { ok: true, status: "wake_sent", target, wake: true };
+    }
+
+    // Case 4: Plain asynchronous message/notice
     db.appendInbox(target, {
       from,
       type: "message",

@@ -11,8 +11,9 @@ Herdr <-> 桌面应用 (ZCode/AntiGravity/Cursor/Claude) Agent Message Router CL
 
 用法:
   router call <target> <message> [--timeout <sec>]       【同步调度】派发任务并阻塞挂起等待回包 (0 Token 消耗)
-  router send <target> <message> [--task] [--reply-to <req_id>]  向目标发送普通消息、派发异步任务(--task)或回复特定任务
-  router wait-one <name> [--timeout <sec>]               【静默哨兵】纯静默阻塞监听任务，有单即打印单行 JSON 并退出 (0 Token 待机)
+  router send <target> <message> [--task] [--wake] [--reply-to <req_id>]  向目标发送普通消息、派发异步任务(--task)、即刻唤醒通知(--wake)或回复特定任务
+  router wait-one <name> [--timeout <sec>] [--mode <all|task|reply>]     【静默哨兵】纯静默阻塞监听任务/回包/通知，有单即打印单行 JSON 并退出 (0 Token 待机)
+  router identity [set <name> | get | clear]                             查看或持久化配置本工作区默认工号 (.router/agent_name)
   router list                                            列出当前网络内所有 Agent 的在线/离线状态与物理句柄
   router inbox [name] [--clear]                          查收指定 Agent 的信箱
   router register <name> [role] [pane_id]                在路由网络中手动登记或更新 Agent
@@ -24,13 +25,19 @@ Herdr <-> 桌面应用 (ZCode/AntiGravity/Cursor/Claude) Agent Message Router CL
   # 场景 2: 异步派发任务给工作节点 (即刻唤醒 wait_for_task 监听，生成 ReqID 待办):
   router send zcode-frontend "请设计用户注册流程页面" --task
 
-  # 场景 3: Herdr 中的 Kimi 完成代码后回包给调用方:
+  # 场景 3: 紧急知会或放行唤醒 (即刻唤醒哨兵，不生成 requests/ 强待办，杜绝看门狗假警):
+  router send zcode-frontend "继续执行，已审批" --wake
+
+  # 场景 4: Herdr 中的 Kimi 完成代码后回包给调用方:
   router send architect "登录接口已完成，相关用例全部通过" --reply-to req_123456
 
-  # 场景 4: 作为后台静默哨兵监听 (宿主有 30s MCP 超时限制时的最佳方案):
-  router wait-one zcode-worker --timeout 86400
+  # 场景 5: 作为后台静默哨兵监听任务与回包 (指挥官/执行节点通用，0 Token 待机):
+  router wait-one cici --mode all --timeout 86400
 
-  # 场景 5: 查看当前全域网络中所有的 Agent:
+  # 场景 6: 持久化配置当前工作区的固定身份工号:
+  router identity set cici
+
+  # 场景 7: 查看当前全域网络中所有的 Agent:
   router list
 `);
 }
@@ -87,11 +94,14 @@ async function main() {
       }
 
       const isTask = args.includes("--task");
-      const res = router.send(callerName, target, message, replyTo, { isTask });
+      const isWake = args.includes("--wake");
+      const res = router.send(callerName, target, message, replyTo, { isTask, wake: isWake });
       if (replyTo) {
         console.log(`✅ 已成功回包给 [${target}] (已闭环解除挂起请求: ${replyTo})`);
       } else if (res.status === "task_dispatched") {
         console.log(`📋 异步任务已成功派发给 [${target}] (任务 ReqID: ${res.req_id}，已入待办队列并触发即时唤醒)`);
+      } else if (res.status === "wake_sent") {
+        console.log(`⚡ 即刻唤醒通知已发送给 [${target}] (已触发目标哨兵唤醒，不生成 requests/ 强追踪待办)`);
       } else {
         console.log(`📨 消息已成功发送给 [${target}]`);
       }
@@ -111,19 +121,49 @@ async function main() {
         timeoutSec = parseInt(args[timeoutIdx + 1], 10) || 86400;
       }
 
+      let mode = "all";
+      const modeIdx = args.indexOf("--mode");
+      if (modeIdx !== -1 && args[modeIdx + 1]) {
+        mode = args[modeIdx + 1];
+      }
+
       try {
-        const task = await router.waitForTask(agentName, timeoutSec);
-        if (task) {
+        const task = await router.waitForTask(agentName, timeoutSec, { mode });
+        if (task && !task.timeout) {
           // Output single-line JSON for easy parsing by agents/scripts, and exit cleanly
           console.log(JSON.stringify({ status: "task_received", ...task }));
           process.exit(0);
         } else {
-          console.log(JSON.stringify({ status: "timeout" }));
+          console.log(JSON.stringify({ status: "timeout", message: task ? task.message : "timed out" }));
           process.exit(0);
         }
       } catch (err) {
         console.error("❌ 监听出错:", err.message);
         process.exit(1);
+      }
+      break;
+    }
+
+    case "identity": {
+      const sub = args[1];
+      if (sub === "set") {
+        const name = args[2];
+        if (!name) {
+          console.error("❌ 缺少身份名称。例如: router identity set cici");
+          process.exit(1);
+        }
+        db.savePersistentIdentity(name);
+        console.log(`✅ 已将本工作区默认身份持久化设为: [${name}] (.router/agent_name)`);
+      } else if (sub === "clear") {
+        db.savePersistentIdentity(null);
+        console.log(`✅ 已清除本工作区默认身份配置`);
+      } else {
+        const current = db.loadPersistentIdentity();
+        if (current) {
+          console.log(`📋 当前工作区默认身份: [${current}] (来自 .router/agent_name)`);
+        } else {
+          console.log(`📋 当前工作区未配置默认身份（将使用 AGENT_NAME 或宿主生成名称）`);
+        }
       }
       break;
     }

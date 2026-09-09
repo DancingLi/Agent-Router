@@ -226,7 +226,97 @@ async function runReviewIssuesTests() {
   assert.strictEqual(parsedTask.message, "哨兵唤醒测试任务内容");
   console.log("  ✓ router wait-one 静默挂起 0 输出，有单即精准单行 JSON 输出退出！");
 
-  console.log("\n🎉 全量针对性隐患回归测试全部 8 项测试 100% 通过！\n");
+  // --- Test 9: 全能单哨兵捕获回包 (router wait-one --mode all 兼收 task 与 reply) ---
+  console.log("▶ [Test 9] 验证统一全能哨兵 (--mode all) 能精准捕获 rpc_reply 回包，根除双哨兵外挂...");
+  const sentryCommander = "cici-commander-test";
+  router.register(sentryCommander, { role: "commander", runtime: "desktop" });
+  router.getInbox(sentryCommander, true);
+
+  let replySentryOutput = "";
+  const replySentryProc = spawn("node", [routerCli, "wait-one", sentryCommander, "--mode", "all", "--timeout", "5"], {
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  replySentryProc.stdout.on("data", (d) => { replySentryOutput += d.toString(); });
+  await sleep(300);
+
+  // Worker 回包给 Commander
+  router.send("worker-test", sentryCommander, "全片渲染完成，交付物已生成", "req_test_reply_123");
+
+  const replyExitCode = await new Promise((resolve) => replySentryProc.on("exit", (code) => resolve(code)));
+  assert.strictEqual(replyExitCode, 0, "哨兵收到回包后必须正常退出");
+  const parsedReply = JSON.parse(replySentryOutput.trim());
+  assert.strictEqual(parsedReply.status, "task_received");
+  assert.strictEqual(parsedReply.type, "rpc_reply");
+  assert.strictEqual(parsedReply.reply_to, "req_test_reply_123");
+  assert.strictEqual(parsedReply.message, "全片渲染完成，交付物已生成");
+  console.log("  ✓ 统一全能哨兵 (--mode all) 成功捕获 rpc_reply 回包，无需外挂双哨兵！");
+
+  // --- Test 10: 即刻唤醒通知 (wake: true) 不污染 requests/ 待办库防看门狗误报 ---
+  console.log("▶ [Test 10] 验证 wake: true 成功唤醒哨兵且绝不在 requests/ 生成强待办文件...");
+  const wakeTarget = "wake-target-worker";
+  router.register(wakeTarget, { role: "worker", runtime: "zcode" });
+  router.getInbox(wakeTarget, true);
+
+  let wakeSentryOutput = "";
+  const wakeSentryProc = spawn("node", [routerCli, "wait-one", wakeTarget, "--timeout", "5"], {
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  wakeSentryProc.stdout.on("data", (d) => { wakeSentryOutput += d.toString(); });
+  await sleep(300);
+
+  // 记录发送前 requests/ 目录的文件数量
+  const requestsDir = path.join(db.ROUTER_DIR, "requests");
+  const reqFilesBefore = fs.existsSync(requestsDir) ? fs.readdirSync(requestsDir).filter(f => f.endsWith(".json")).length : 0;
+
+  // 发送即刻唤醒通知 (wake: true)
+  const wakeRes = router.send("commander", wakeTarget, "EP38 分镜已审批通过，GO！", null, { wake: true });
+  assert.strictEqual(wakeRes.status, "wake_sent");
+  assert(!wakeRes.req_id, "wake 通知绝不应生成 req_id");
+
+  const wakeExitCode = await new Promise((resolve) => wakeSentryProc.on("exit", (code) => resolve(code)));
+  assert.strictEqual(wakeExitCode, 0, "哨兵收到 wake 通知必须正常退出唤醒");
+  const parsedWake = JSON.parse(wakeSentryOutput.trim());
+  assert.strictEqual(parsedWake.status, "task_received");
+  assert.strictEqual(parsedWake.type, "notice");
+  assert.strictEqual(parsedWake.message, "EP38 分镜已审批通过，GO！");
+
+  // 验证 requests/ 目录中的文件数量没有增加（杜绝看门狗报警）
+  const reqFilesAfter = fs.existsSync(requestsDir) ? fs.readdirSync(requestsDir).filter(f => f.endsWith(".json")).length : 0;
+  assert.strictEqual(reqFilesAfter, reqFilesBefore, "wake: true 绝不能在 requests/ 增加待办文件！");
+  console.log("  ✓ wake: true 即刻唤醒哨兵，且 0 待办写入 requests/，杜绝看门狗报假警！");
+
+  // --- Test 11: 持久化工号机制 (.router/agent_name) 防桌面 IDE 重启身份漂移 ---
+  console.log("▶ [Test 11] 验证 .router/agent_name 持久化默认工号，重启切窗无身份漂移...");
+  // 1. 设置持久化工号
+  db.savePersistentIdentity("cici-permanent");
+  assert.strictEqual(db.loadPersistentIdentity(), "cici-permanent");
+
+  // 2. 启动新的 MCP Server 进程，未注入 AGENT_NAME 环境变量
+  const mcpProcess3 = spawn("node", [serverScript], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, AGENT_NAME: "" }
+  });
+  await sleep(200);
+
+  // 3. 执行 initialize 握手
+  mcpProcess3.stdin.write(JSON.stringify({
+    jsonrpc: "2.0", id: 1, method: "initialize", params: { clientInfo: { name: "kimi-work" } }
+  }) + "\n");
+  await sleep(300);
+
+  // 4. 检查注册表：应当直接使用 cici-permanent，而不是 kimi-work-<pid>
+  const regMcp3 = router.list();
+  assert(regMcp3["cici-permanent"] && regMcp3["cici-permanent"].status === "online", "MCP 必须自动复用持久化工号 cici-permanent");
+  assert(!regMcp3[`kimi-work-${mcpProcess3.pid}`], "不应生成随机 kimi-work-<pid>");
+
+  // 5. 清理
+  mcpProcess3.kill();
+  await sleep(200);
+  db.savePersistentIdentity(null); // 清除测试配置
+  assert.strictEqual(db.loadPersistentIdentity(), null);
+  console.log("  ✓ .router/agent_name 持久化工号加载成功，彻底根除桌面 IDE 身份漂移！");
+
+  console.log("\n🎉 全量针对性隐患回归测试全部 11 项测试 100% 通过！\n");
 }
 
 runReviewIssuesTests().catch(err => {
